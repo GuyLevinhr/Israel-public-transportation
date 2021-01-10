@@ -13,12 +13,14 @@ MongoDbBICluster =   "mongodb+srv://<UserName>:<Password>@tranmongodbcluster.3sb
 MongoDb = MongoDbBICluster
 client = pymongo.MongoClient(MongoDb)
 db = client["TranDB"]
-# Collection name
+
 busAtStation_collection = db["BusAtStation"]
 
 kinesisStream = boto3.client('kinesis', region_name="eu-north-1")
-shard_id = 'shardId-000000000000' #we only have one shard!
+shard_id = 'shardId-000000000000' #we only have one shard
 shard_it = kinesisStream.get_shard_iterator(StreamName ="tran.bus.in.station", ShardId = shard_id, ShardIteratorType="LATEST",Timestamp=datetime(2015, 1, 1))["ShardIterator"]
+
+#Take the information from kinesis and save it in Mongo
 while 1==1:
 	out = kinesisStream.get_records(ShardIterator=shard_it, Limit=1)
 	shard_it = out["NextShardIterator"]
@@ -39,6 +41,5 @@ while 1==1:
 		data_json['Eecorded_At_Time'] = datetime.strptime(today + ' ' + data_json['Eecorded_At_Time'], '%Y-%m-%d %H:%M:%S')
 		data_json['Nearest_Arrival_Time'] = datetime.strptime(today + ' ' + data_json['Nearest_Arrival_Time'], '%Y-%m-%d %H:%M:%S')
 
-		print(data_json)
 		busAtStation_collection.insert_one(data_json)
 	time.sleep(0.2)

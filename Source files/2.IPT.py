@@ -7,6 +7,7 @@ from datetime import datetime , timedelta
 import boto3
 import time
 
+#Selected routes
 routes = ['9872','9857']
 
 MaxRecordTime = datetime.today() - timedelta(hours=1)
@@ -21,39 +22,25 @@ uaer_name = "XXXX123465"
 
 live_params = {
     'Key': uaer_name,
-    #'LineRef':'9872',
-    #"MonitoringRef":"all",
     "MonitoringRef":"AllActiveTripsFilter",
     "StopVisitDetailLevel":"normal"
 }
 
 
-# In[ ]:
-
-
 while True:
-#####################################################################################################################
-#####################################################################################################################
-
+	#request date from IPT
     json_live = requests.request("GET", stream_url, params=live_params)
 
+	#Get Json
     res_json = json_live.json()
 
-#####################################################################################################################
-#####################################################################################################################
-
+	#Take out the data from the hierarchy json 
     MonitoredStopVisit = res_json["Siri"]["ServiceDelivery"]["StopMonitoringDelivery"]
-
     stops = [stop for stops in [Monitor["MonitoredStopVisit"] for Monitor in MonitoredStopVisit] for stop in stops]
-
-#####################################################################################################################
-#####################################################################################################################
 
     lst =[
         {
         "RecordedAtTime":x["RecordedAtTime"],
-        #"ItemIdentifier":x["ItemIdentifier"],
-        #"MonitoringRef": x["MonitoringRef"],
         "LineRef":x["MonitoredVehicleJourney"]["LineRef"],
         "DirectionRef":x["MonitoredVehicleJourney"]["DirectionRef"],
         "DatedVehicleJourneyRef":x["MonitoredVehicleJourney"]["FramedVehicleJourneyRef"]["DatedVehicleJourneyRef"],
@@ -64,25 +51,19 @@ while True:
         "OriginAimedDepartureTime": x["MonitoredVehicleJourney"]["OriginAimedDepartureTime"],
         "VehicleLocation_Longitude":x["MonitoredVehicleJourney"]["VehicleLocation"]["Longitude"],
         "VehicleLocation_Latitude": x["MonitoredVehicleJourney"]["VehicleLocation"]["Latitude"],
-        #"VehicleRef":x["MonitoredVehicleJourney"]["VehicleRef"],
         "Velocity":x["MonitoredVehicleJourney"]["Velocity"],
-        #"StopPointRef":x["MonitoredVehicleJourney"]["MonitoredCall"]["StopPointRef"],
-        #"Order":x["MonitoredVehicleJourney"]["MonitoredCall"]["Order"],
-        #"ExpectedArrivalTime":x["MonitoredVehicleJourney"]["MonitoredCall"]["ExpectedArrivalTime"],
-        #"DistanceFromStop":x["MonitoredVehicleJourney"]["MonitoredCall"]["DistanceFromStop"]
         } 
         for x in stops if x["MonitoredVehicleJourney"]["LineRef"] in routes]
-        #if x["MonitoredVehicleJourney"]["FramedVehicleJourneyRef"]["DatedVehicleJourneyRef"] == "29669249"]
 
     df = dp.DataFrame(lst)
     
-#####################################################################################################################
-#####################################################################################################################
 
+	#Take only the most up-to-date information
     live_data = df[df.groupby(['DatedVehicleJourneyRef'])['RecordedAtTime'].transform(max) == df['RecordedAtTime']]
 
     live_data.drop_duplicates(inplace = True)
 
+	#Take and format the update time
     live_data["OriginAimedDepartureTime"] = live_data.OriginAimedDepartureTime.map(lambda x : x.split("T")[1].split('+')[0])
     live_data["RecordedAtTime"] = live_data.RecordedAtTime.map(lambda x : x.split("+")[0])
     live_data["RecordedAtTime"] = dp.to_datetime(live_data["RecordedAtTime"], format="%Y-%m-%dT%H:%M:%S")
@@ -90,18 +71,10 @@ while True:
 
     if live_data.empty == False:
         MaxRecordTime = live_data.RecordedAtTime.max()
-        #live_data.columns = map(str.lower, live_data.columns)
-        #print(MaxRecordTime)
-    
-#live_data.sort_values(by=['DatedVehicleJourneyRef','RecordedAtTime'], ascending=[1,1])
-#live_data.head()
 
-#####################################################################################################################
-#####################################################################################################################
-
+	#Send the information to kinesis
     if live_data.empty == False:  
         for index,trip in live_data.iterrows():
-            #print(trip)
             kinesis_client.put_record(
                 StreamName=STREAM_NAME,
                 Data=trip.to_json(),
@@ -109,8 +82,6 @@ while True:
 
     time.sleep(15)
 
-
-# In[ ]:
 
 
 

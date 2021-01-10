@@ -24,14 +24,12 @@ os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages=com.qubole.spark/spark-sql-kines
 findspark.init()
 
 
-MongoDbFreeCluster = "mongodb+srv://<UserName>:<Password>@trancluster.3sb01.mongodb.net/?retryWrites=true&w=majority"
 MongoDbBICluster =   "mongodb+srv://<UserName>:<Password>@tranmongodbcluster.3sb01.mongodb.net/?retryWrites=true&w=majority"
 
 MongoDb = MongoDbBICluster
 
 stream_name_Pub = 'TranOnline'
 stream_name_Sub = 'tranafterspark'
-
 
 awsAccessKeyId = "AKIAUXXXXXXXXXX" 
 awsSecretKey = "HAKT4cOdXXXXXXXXXX"
@@ -44,26 +42,26 @@ spark = SparkSession.builder \
          .appName('PySparkKinesis') \
          .getOrCreate()
 
-#Mongo
+#Connect to Mongo
 client = pymongo.MongoClient(MongoDb)
 db = client["TranDB"]
-
-# Collection name
 Trips_collection = db["Trips"]
 
+#Retrieve from mongo the information of today's schedules for the selected routes
 trip_schedule = Trips_collection.find({ '$and' : [
                                                     {"DepartureDate" : todat_str},
                                                     {"route_id" : { '$in': routes}}
                                                 ]
                                         },{"_id" :0,"trip_id_of_agency":1,"stop_time_json": 1})
-#print(list(trip_schedule))
+
+#convect to Pandas DataFrame
 df_schedule = pd.DataFrame(list(trip_schedule))
 
+#convect to Spark DataFrame
 spark_schedule = spark.createDataFrame(df_schedule)
 
 spark_schedule = spark_schedule.withColumnRenamed("trip_id_of_agency","Short_Trip_Id")
 
-print(spark_schedule.show())
 
 TripSchema = StructType() \
             .add("DataFrameRef", StringType()) \
@@ -79,6 +77,7 @@ TripSchema = StructType() \
             .add("VehicleLocation_Longitude", StringType()) \
             .add("Velocity", StringType())
 
+#Get Stream Data From Kinesis
 kinesisDF = spark \
         .readStream \
         .format('kinesis') \
@@ -89,8 +88,8 @@ kinesisDF = spark \
         .option('awsSecretKey', awsSecretKey ) \
         .option('startingposition', 'LATEST')\
         .load()
-#TRIM_HORIZON
 
+#Format the data by schema
 kinesisDF = kinesisDF \
   .selectExpr("cast (data as STRING) jsonData") \
   .select(from_json("jsonData", TripSchema).alias("trips")) \
@@ -101,9 +100,11 @@ kinesisDF = kinesisDF.withColumn('RecordedAtTime', from_unixtime(kinesisDF.Recor
 
 kinesisDF = kinesisDF.withColumnRenamed("DatedVehicleJourneyRef","Short_Trip_Id")
 
+#Enrich the stream information by adding the data of the schedules from mongo
 kinesisDF = kinesisDF.join(spark_schedule,"Short_Trip_Id")
 
-
+#Search for the station closest to the current bus location
+#And enriching the streams with the data of the nearest station and its distance from the bus
 def get_nearest_Point(bus_lon,bus_lat,trip_Stops):
 
     bus_lat = float(bus_lat)
@@ -138,14 +139,12 @@ get_nearest_Point_udf = udf(lambda row: get_nearest_Point(row[0], row[1], row[2]
 kinesisDF = kinesisDF.withColumn("nearest", get_nearest_Point_udf(struct([col('VehicleLocation_Longitude'), col('VehicleLocation_Latitude'),col('stop_time_json')])))\
 	.select('*','nearest.*')
 
+#Formatting a dataframe to kinesis format
 kinesisDF = kinesisDF.select("Short_Trip_Id",to_json(struct("*")))
 kinesisDF = kinesisDF.withColumnRenamed('structstojson(named_struct(NamePlaceholder(), unresolvedstar()))','json_data')
 
-#kinesisDF = kinesisDF.selectExpr("CAST(Short_Trip_Id AS STRING) as partitionKey", "CAST(json_data AS STRING) as data")
-
-
+#Sending the data to Kinesis
 def wrtietoKinesis(live_data):
-    #print(live_data['data'])
     row_data = live_data['json_data']
     row_partitionKey = live_data['Short_Trip_Id']
     print(row_partitionKey, row_data)
